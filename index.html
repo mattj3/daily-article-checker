@@ -1,0 +1,310 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Daily Article Checker</title>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --bg: #ffffff;
+        --text: #111111;
+        --muted: #555555;
+        --border: #dddddd;
+        --link: #0b57d0;
+        --button-bg: #f4f4f4;
+      }
+
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          Arial,
+          sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        margin: 24px;
+        line-height: 1.4;
+      }
+
+      a {
+        color: var(--link);
+      }
+
+      /* Mark links the user has clicked */
+      a.clicked {
+        text-decoration: line-through;
+        opacity: 0.75;
+      }
+
+      .row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      input[type="text"] {
+        width: min(700px, 100%);
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-size: 14px;
+        background: transparent;
+        color: var(--text);
+      }
+
+      button {
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--button-bg);
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      button:hover {
+        opacity: 0.9;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      ul {
+        padding-left: 18px;
+      }
+
+      /* Dark mode */
+      body.dark {
+        --bg: #0f1115;
+        --text: #e8e8e8;
+        --muted: #a7a7a7;
+        --border: #2b2f3a;
+        --link: #7ab4ff;
+        --button-bg: #1a1f2b;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="row" style="justify-content: space-between">
+      <h1 style="margin: 0">Daily Article Checker</h1>
+
+      <label class="row" style="gap: 8px">
+        <input id="darkToggle" type="checkbox" />
+        <span class="muted">Dark mode</span>
+      </label>
+    </div>
+
+    <p class="muted">
+      Paste an RSS feed URL. Click <b>Check for Articles</b> to see items you
+      haven’t seen before. This tool remembers seen links and settings in your
+      browser (localStorage).
+    </p>
+
+    <div class="row">
+      <input id="feed" type="text" placeholder="Paste RSS feed URL here" />
+      <button id="useDefault" type="button">Use default feed</button>
+    </div>
+
+    <div class="row" style="margin-top: 12px">
+      <button id="load" type="button">Check for Articles</button>
+      <button id="reset" type="button">Reset Seen Articles</button>
+    </div>
+
+    <p id="status" style="margin-top: 14px"></p>
+    <p id="lastChecked" class="muted" style="margin-top: -8px"></p>
+
+    <ul id="articles"></ul>
+
+    <script>
+      const button = document.getElementById("load");
+      const resetButton = document.getElementById("reset");
+      const useDefaultButton = document.getElementById("useDefault");
+
+      const list = document.getElementById("articles");
+      const status = document.getElementById("status");
+      const lastChecked = document.getElementById("lastChecked");
+      const feedInput = document.getElementById("feed");
+      const darkToggle = document.getElementById("darkToggle");
+
+      const SEEN_KEY = "seenArticleLinks";
+      const CLICKED_KEY = "clickedArticleLinks";
+      const FEED_KEY = "rssFeedUrl";
+      const LAST_CHECKED_KEY = "lastCheckedAt";
+      const DARK_KEY = "dailyArticleCheckerDarkMode";
+
+      const DEFAULT_FEED_URL =
+        "https://news.google.com/rss/search?q=software+testing&hl=en-US&gl=US&ceid=US:en";
+
+      // --- Dark mode (load + persist) ---
+      const savedDark = localStorage.getItem(DARK_KEY);
+      const isDark = savedDark === "true";
+      document.body.classList.toggle("dark", isDark);
+      darkToggle.checked = isDark;
+
+      darkToggle.addEventListener("change", () => {
+        const enabled = darkToggle.checked;
+        document.body.classList.toggle("dark", enabled);
+        localStorage.setItem(DARK_KEY, String(enabled));
+      });
+
+      // --- Load last checked time on page load ---
+      lastChecked.textContent = localStorage.getItem(LAST_CHECKED_KEY) || "";
+
+      // --- Load saved feed (default if none) ---
+      feedInput.value = localStorage.getItem(FEED_KEY) || DEFAULT_FEED_URL;
+
+      function getFeedUrl() {
+        const url = feedInput.value.trim();
+        return url || DEFAULT_FEED_URL;
+      }
+
+      // Save feed while typing/pasting
+      feedInput.addEventListener("input", () => {
+        localStorage.setItem(FEED_KEY, feedInput.value.trim());
+      });
+
+      // Use default feed button (does NOT touch seen/clicked lists)
+      useDefaultButton.addEventListener("click", () => {
+        feedInput.value = DEFAULT_FEED_URL;
+        localStorage.setItem(FEED_KEY, DEFAULT_FEED_URL);
+        status.textContent = "Default feed set.";
+        list.innerHTML = "";
+      });
+
+      function loadSet(key) {
+        const raw = localStorage.getItem(key);
+        if (!raw) return new Set();
+        try {
+          const arr = JSON.parse(raw);
+          if (!Array.isArray(arr)) return new Set();
+          return new Set(arr);
+        } catch {
+          return new Set();
+        }
+      }
+
+      function saveSet(key, set) {
+        localStorage.setItem(key, JSON.stringify(Array.from(set)));
+      }
+
+      button.addEventListener("click", async () => {
+        status.textContent = "";
+        list.innerHTML = "Loading...";
+
+        const nowText = "Last checked: " + new Date().toLocaleString();
+        lastChecked.textContent = nowText;
+        localStorage.setItem(LAST_CHECKED_KEY, nowText);
+
+        const RSS_URL = getFeedUrl();
+        const PROXY_URL =
+          "https://api.allorigins.win/raw?url=" + encodeURIComponent(RSS_URL);
+
+        const seen = loadSet(SEEN_KEY);
+        const clicked = loadSet(CLICKED_KEY);
+
+        try {
+          const response = await fetch(PROXY_URL);
+          const text = await response.text();
+
+          const parser = new DOMParser();
+          const xml = parser.parseFromString(text, "application/xml");
+          const items = Array.from(xml.querySelectorAll("item"));
+
+          const newItems = [];
+
+          for (const item of items) {
+            const linkEl = item.querySelector("link");
+            const titleEl = item.querySelector("title");
+            if (!linkEl || !titleEl) continue;
+
+            const link = linkEl.textContent.trim();
+            const title = titleEl.textContent.trim();
+
+            const pubDateEl = item.querySelector("pubDate");
+            const pubDateText = pubDateEl ? pubDateEl.textContent.trim() : "";
+
+            let prettyDate = "";
+            let timestamp = 0;
+
+            if (pubDateText) {
+              const d = new Date(pubDateText);
+              if (!isNaN(d.getTime())) {
+                prettyDate = d.toLocaleString();
+                timestamp = d.getTime();
+              }
+            }
+
+            if (!seen.has(link)) {
+              newItems.push({ title, link, prettyDate, timestamp });
+            }
+          }
+
+          // Sort by date descending (newest first). Items without dates stay last.
+          newItems.sort((a, b) => b.timestamp - a.timestamp);
+
+          list.innerHTML = "";
+
+          if (newItems.length === 0) {
+            status.textContent = "No new articles since last check.";
+          } else {
+            status.textContent = `New articles: ${newItems.length}`;
+
+            for (const { title, link, prettyDate } of newItems) {
+              const li = document.createElement("li");
+
+              const a = document.createElement("a");
+              a.href = link;
+              a.textContent = title;
+              a.target = "_blank";
+
+              // If user previously clicked this link, show it as clicked
+              if (clicked.has(link)) a.classList.add("clicked");
+
+              // Mark as clicked when user clicks it
+              a.addEventListener("click", () => {
+                clicked.add(link);
+                saveSet(CLICKED_KEY, clicked);
+                a.classList.add("clicked");
+              });
+
+              li.appendChild(a);
+
+              if (prettyDate) {
+                const meta = document.createElement("span");
+                meta.className = "muted";
+                meta.textContent = ` — ${prettyDate}`;
+                li.appendChild(meta);
+              }
+
+              list.appendChild(li);
+
+              // Mark as seen once displayed
+              seen.add(link);
+            }
+
+            saveSet(SEEN_KEY, seen);
+            // Save clicked set as well (in case it grew elsewhere)
+            saveSet(CLICKED_KEY, clicked);
+          }
+        } catch (error) {
+          list.innerHTML = "";
+          status.textContent =
+            "Failed to load articles. (Invalid RSS URL or blocked feed)";
+          console.error(error);
+        }
+      });
+
+      resetButton.addEventListener("click", () => {
+        const confirmReset = confirm("Reset all seen articles?");
+        if (confirmReset) {
+          localStorage.removeItem(SEEN_KEY);
+          localStorage.removeItem(CLICKED_KEY);
+          status.textContent = "Seen (and clicked) articles reset.";
+          list.innerHTML = "";
+        }
+      });
+    </script>
+  </body>
+</html>
